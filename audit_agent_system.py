@@ -13,8 +13,8 @@ import pdfplumber
 import requests
 
 
-DEFAULT_AI_API_URL = os.getenv("SILICON_FLOW_API_URL", "https://api.example.com/v1/audit")
-DEFAULT_AI_API_KEY = os.getenv("SILICON_FLOW_API_KEY")
+DEFAULT_AI_API_URL = "https://api.siliconflow.cn/v1"
+DEFAULT_AI_API_KEY = "sk-qkjtyjmzbtdhxhhdlttsvfeejnmmwpcoadblkrvgfeihewwk"
 DEFAULT_AI_MODEL = os.getenv("SILICON_FLOW_MODEL", "gpt-4-silicon")
 
 NUMERIC_RE = re.compile(r"([+-]?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)")
@@ -97,23 +97,43 @@ class DataAgent:
         return "\n".join(text_parts)
 
     def parse_numeric_values(self, text: str) -> dict[str, float]:
-        metrics: dict[str, float] = {}
-        text = text.replace("，", ",")
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        for line in lines:
-            lower = line.lower()
-            if "营收" in lower or "营业收入" in lower:
-                metrics["revenue"] = self._extract_first_number(line)
-            elif "净利润" in lower or "归属于母公司股东的净利润" in lower:
-                metrics["net_profit"] = self._extract_first_number(line)
-            elif "总资产" in lower and "净资产" not in lower:
-                metrics["total_assets"] = self._extract_first_number(line)
-            elif "总负债" in lower:
-                metrics["total_liabilities"] = self._extract_first_number(line)
-            elif "现金及现金等价物" in lower or "现金" in lower and "流量" not in lower:
-                metrics.setdefault("cash", self._extract_first_number(line))
-            elif "归属母公司股东" in lower and "净资产" in lower:
-                metrics["equity"] = self._extract_first_number(line)
+        #在处理中文财务术语（如“扣非净利润”、“加权ROE”）方面，国产模型有天然的语料优势，且性价比极高
+        model = "deepseek-ai/DeepSeek-V3.2"
+        prompt = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是一位资深的注册会计师（CPA）和数据提取专家。你的任务是从结构化的 PDF 坐标文本中精准提取财务数据。"
+                            "你具备极强的语义理解能力，能够识别会计科目的同义词（如“营业总收入”等同于“营业收入”）。"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "# 任务目标\n"
+                            "从下方的 <PDF_DATA> 中提取指标，要求：\n"
+                            "1. 统一单位：若原文为“万元”或“亿元”，请自动换算为“元”（浮点数）。\n"
+                            "2. 数据清洗：识别括号负数（如 (100) -> -100），剔除千分位逗号。\n"
+                            "3. 字段映射：\n"
+                            "   - revenue: 营业收入 / 营业总收入\n"
+                            "   - net_profit: 归属于母公司股东的净利润\n"
+                            "   - total_assets: 资产总额 / 总资产\n"
+                            "   - total_liabilities: 负债总额 / 总负债\n"
+                            "   - equity: 归属于母公司股东的所有者权益 / 股东权益合计\n"
+                            "   - cash: 期末现金及现金等价物余额\n"
+                            "   - currency type: 币种和单位\n\n"
+                            
+                            "# 输出要求\n"
+                            "仅返回 JSON 格式，不含解释。格式如下：\n"
+                            "{\"revenue\": 0.0, \"net_profit\": 0.0, ...}\n\n"
+                            
+                            "<PDF_DATA>\n"
+                            f"{text}\n"  # 这里填入你处理过的 [r/c] 格式文本
+                            "</PDF_DATA>"
+                        )
+                    }
+                ]
+        metrics = self.llm_service.call(prompt, model)
         return metrics
 
     def _extract_first_number(self, text: str) -> float:
@@ -271,26 +291,30 @@ class AuditAgent:
 
 
 class LLMService:
-    def __init__(self, api_url: str, api_key: str, model: str = DEFAULT_AI_MODEL):
+    def __init__(self, api_url: str, api_key: str):
+        self.api_key = api_key
+        self.api_url = api_url
+
         self.client = OpenAI(
             api_key = api_key,
             base_url= api_url
         )
-        self.model = model
 
-    def call(self, Response_format: dict) -> str:
+    def call(self, Response_format: dict, model: str) -> str:
         if not self.api_key:
             raise RuntimeError("缺少 AI API Key，无法调用模型服务。")
-
-        response = self.client.chat.completions.create(
-            model= self.model,
-            messages= [{"role": "system",
-                        "content": f"你是一个审计助手，需要阅读文件并按照{Response_format}, 最后以json格式输出"}],
-            stream= False,
-        )
-        result_json = response.choices[0].message.content
-        # response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
-        # response.raise_for_status()
+        try:
+            response = self.client.chat.completions.create(
+                model= model,
+                messages= Response_format,
+                stream= False,
+            )
+            result_json = response.choices[0].message.content
+            # response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+            # response.raise_for_status()
+            print(f"[CAUSION] 本次消耗 Token 总数: {response.usage.total_tokens}")
+        except Exception as e:
+            print("[ERROR] API 调用失败。")
         return result_json
 
 
@@ -352,7 +376,7 @@ def main() -> None:
     args = parse_args()
     ai_service = None
     if not args.disable_ai and args.ai_api_key:
-        ai_service = LLMService(args.ai_api_url, args.ai_api_key, args.ai_model)
+        ai_service = LLMService(args.ai_api_url, args.ai_api_key)
     elif not args.disable_ai:
         print("警告：未配置 AI API Key，已切换为本地规则模式。")
 
@@ -375,6 +399,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    dataagent = DataAgent()
-    text = dataagent.extract_text_from_pdf("11062118.pdf")
-    print(text)
+    main()
+    # ai_service = LLMService(DEFAULT_AI_API_URL, DEFAULT_AI_API_KEY)
+    # dataagent = DataAgent(llm_service=ai_service)
+    # text = dataagent.build_financial_profile(company="中炬高新", source="2025 年第一季度报告", pdf_path="11062118.pdf")
+    # print(text["financials"])
