@@ -1,6 +1,4 @@
 # aidedao
 Packages requirements:
-    requests
-    openai
-    pdfplumber
+
     (terminal)pip install requests openai pdfplumber
