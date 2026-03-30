@@ -14,7 +14,7 @@ import requests
 
 
 DEFAULT_AI_API_URL = "https://api.siliconflow.cn/v1"
-DEFAULT_AI_API_KEY = "sk-qkjtyjmzbtdhxhhdlttsvfeejnmmwpcoadblkrvgfeihewwk"
+DEFAULT_AI_API_KEY = ""
 DEFAULT_AI_MODEL = os.getenv("SILICON_FLOW_MODEL", "gpt-4-silicon")
 
 NUMERIC_RE = re.compile(r"([+-]?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)")
