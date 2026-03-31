@@ -9,13 +9,14 @@ from pathlib import Path
 from typing import Any
 from openai import OpenAI
 
-import pdfplumber 
+import statistics
+import pdfplumber
 import requests
 
 
 DEFAULT_AI_API_URL = "https://api.siliconflow.cn/v1"
-DEFAULT_AI_API_KEY = ""
-DEFAULT_AI_MODEL = os.getenv("SILICON_FLOW_MODEL", "gpt-4-silicon")
+DEFAULT_AI_API_KEY = "sk-qkjtyjmzbtdhxhhdlttsvfeejnmmwpcoadblkrvgfeihewwk"
+#DEFAULT_AI_MODEL = os.getenv("SILICON_FLOW_MODEL", "gpt-4-silicon")
 
 NUMERIC_RE = re.compile(r"([+-]?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)")
 CURRENCY_WORDS = ["元", "亿", "万", "USD", "CNY", "RMB", "美元"]
@@ -28,10 +29,40 @@ class AuditResult:
     financials: dict[str, Any] = field(default_factory=dict)
     indicators: dict[str, float] = field(default_factory=dict)
     comparisons: dict[str, Any] = field(default_factory=dict)
+    ind_mean: dict[str, Any] = field(default_factory=dict)
+    ind_std: dict[str, Any] = field(default_factory=dict)
+    z_scores: dict[str, Any] = field(default_factory=dict)
     anomalies: list[str] = field(default_factory=list)
     risk_score: float = 0.0
     recommendations: list[str] = field(default_factory=list)
     report: str = ""
+
+class LLMService:
+    def __init__(self, api_url: str, api_key: str):
+        self.api_key = api_key
+        self.api_url = api_url
+
+        self.client = OpenAI(
+            api_key = api_key,
+            base_url= api_url
+        )
+
+    def call(self, Response_format: dict, model: str) -> str:
+        if not self.api_key:
+            raise RuntimeError("缺少 AI API Key，无法调用模型服务。")
+        try:
+            response = self.client.chat.completions.create(
+                model= model,
+                messages= Response_format,
+                stream= False,
+            )
+            result_json = response.choices[0].message.content
+            # response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+            # response.raise_for_status()
+            print(f"[CAUSION] 本次消耗 Token 总数: {response.usage.total_tokens}")
+        except Exception as e:
+            print("[ERROR] API 调用失败。")
+        return result_json
 
 
 class DataAgent:
@@ -121,10 +152,9 @@ class DataAgent:
                             "   - total_liabilities: 负债总额 / 总负债\n"
                             "   - equity: 归属于母公司股东的所有者权益 / 股东权益合计\n"
                             "   - cash: 期末现金及现金等价物余额\n"
-                            "   - currency type: 币种和单位\n\n"
                             
                             "# 输出要求\n"
-                            "仅返回 JSON 格式，不含解释。格式如下：\n"
+                            "仅返回 JSON 格式内容，不含解释，不含引号，不换行。严格按照如下格式：\n"
                             "{\"revenue\": 0.0, \"net_profit\": 0.0, ...}\n\n"
                             
                             "<PDF_DATA>\n"
@@ -134,6 +164,7 @@ class DataAgent:
                     }
                 ]
         metrics = self.llm_service.call(prompt, model)
+        metrics = json.loads(metrics)
         return metrics
 
     def _extract_first_number(self, text: str) -> float:
@@ -191,8 +222,8 @@ class AnalysisAgent:
         }
         return indicators
 
-    def industry_comparison(self, indicators: dict[str, float]) -> dict[str, Any]:
-        benchmark = {
+    def industry_comparison(self, indicators: dict[str, float], ind_means: dict[str, float] | None = None) -> dict[str, Any]:
+        benchmark = ind_means if ind_means != None else {
             "profit_margin": 12.0,
             "debt_ratio": 55.0,
             "roe": 10.0,
@@ -209,22 +240,40 @@ class AnalysisAgent:
         return comparison
 
     def generate_analysis_report(self, result: AuditResult) -> str:
-        prompt = (
-            "请基于以下财务指标生成简明分析报告：\n"
-            f"公司：{result.company}\n"
-            f"营业收入：{result.indicators.get('revenue', 0.0):,.2f}\n"
-            f"净利润：{result.indicators.get('net_profit', 0.0):,.2f}\n"
-            f"净利率：{result.indicators.get('profit_margin', 0.2):.2f}%\n"
-            f"资产负债率：{result.indicators.get('debt_ratio', 0.0):.2f}%\n"
-            f"ROE：{result.indicators.get('roe', 0.0):.2f}%\n"
-            "请根据行业对比结果给出分析结论。"
-        )
+        model = "deepseek-ai/DeepSeek-V3.2"
+        prompt = [
+                    {
+                        "role": "system",
+                        "content": "你是一位资深的财务分析师，擅长通过财务数据透视企业的经营风险与盈利质量。"
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "# Context\n"
+                            "请针对以下公司的财务表现并根据行业对比结果撰写一份简要分析报告。\n\n"
+
+                            "# Input Data\n"
+                            f"- 公司名称：{result.company}\n"
+                            f"- 营业收入：{result.indicators.get('revenue', 0.0):,.2f}\n"
+                            f"- 净利润：{result.indicators.get('net_profit', 0.0):,.2f}\n"
+                            f"- 净利率：{result.indicators.get('profit_margin', 0.2):.2f}%\n"
+                            f"- 资产负债率：{result.indicators.get('debt_ratio', 0.0):.2f}%\n"
+                            f"- ROE：{result.indicators.get('roe', 0.0):.2f}%\n"
+                            f"- 核心指标与行业对比：{result.comparisons}\n\n"
+
+                            "# Report Requirements\n"
+                            "请按以下结构撰写（字数控制在 500 字以内）：\n"
+                            "1. 经营概况：分析营收与利润规模，评价盈利能力（基于 ROE 和净利率）。\n"
+                            "2. 财务稳健性：结合资产负债率和现金流覆盖情况，评估偿债风险。\n"
+                            "3. 根据行业对比结果给出分析结论。\n\n"
+                            "# Tone\n"
+                            "专业、客观、言简意赅。避免口水话，多使用“财务韧性”、“资本结构优化”、“盈利质量”等专业词汇\n"
+                        )
+                    }
+                ]
+
         if self.llm_service:
-            return self.llm_service.call(prompt, task="analysis")
-        return (
-            "综合分析：公司营业收入与净利润水平需要进一步确认。"
-            " 净利率与行业基准相比存在差异，若资产负债率偏高，则应关注资本结构风险。"
-        )
+            return self.llm_service.call(prompt, model)
 
 
 class RiskAgent:
@@ -235,6 +284,7 @@ class RiskAgent:
             "roe": 5.0,
             "cash_to_liabilities": 10.0,
         }
+
 
     def detect_anomalies(self, indicators: dict[str, float]) -> list[str]:
         anomalies: list[str] = []
@@ -254,6 +304,14 @@ class RiskAgent:
         score += max(0.0, min(20.0, (20.0 - indicators.get("profit_margin", 0.0)) / 1.0))
         score += 10.0 * len(anomalies)
         return min(100.0, round(score, 1))
+    
+    def z_scores(self, indicators: dict[str, float], ind_mean: dict[str, float] | None = None, ind_std: dict[str, float] | None = None) -> dict[str, float]:
+        z_scores = {}
+        if ind_std != None and ind_mean != None:
+            for key, value in indicators.items():
+                z_scores[key] = (value - ind_mean.get(key+"_mean", 0.0)) / max(ind_std.get(key+"_std", 1.0), 0.0001)
+
+        return z_scores
 
 
 class AuditAgent:
@@ -274,48 +332,91 @@ class AuditAgent:
 
     def build_audit_report(self, result: AuditResult) -> str:
         if self.llm_service:
-            prompt = (
-                "请基于以下风险评分、异常项和财务分析结果撰写审计建议：\n"
-                f"风险评分：{result.risk_score}\n"
-                f"异常项：{'；'.join(result.anomalies) if result.anomalies else '无'}\n"
-                f"建议：{'；'.join(result.recommendations)}\n"
-            )
-            return self.llm_service.call(prompt, task="audit")
+            model = "deepseek-ai/DeepSeek-V3.2"
+            prompt = [
+                        {
+                            "role": "system",
+                            "content": "你是一位资深注册会计师（CPA）。你擅长通过财务数据的异常波动发现企业潜在的经营风险、财务造假或管理漏洞。你的语言风格稳重、严谨、客观。\n"
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "请基于以下风险评分、行业基准对比及异常检测结果(如果给出）和财务分析结果撰写审计建议：\n"
+                                "# 输入数据 (Context)\n"
+                                f"- 目标公司：{result.company}\n"
+                                f"- 核心指标 (Indicators): {result.indicators}\n"
+                                f"- 行业基准偏离度 (Z-Scores): {result.z_scores}\n"
+                                f"- 自动检测到的异常项 (Anomalies): {result.anomalies}\n"
+                                f"- 综合风险评分: {result.risk_score}\n\n"
 
-        sections = [
-            f"风险评分：{result.risk_score}/100",
-            "异常检测：" + ("；".join(result.anomalies) if result.anomalies else "未发现重大异常。"),
-            "建议：" + "；".join(result.recommendations),
-        ]
-        return "\n".join(sections)
+                                "# 审计逻辑参考 (加分点)\n"
+                                "- 若 |Z-Score| > 2.0，视为显著统计学异常，必须在报告中分析原因。\n"
+                                "- 风险评分权重：营收异常(0.4)、杠杆异常(0.3)、利润异常(0.3)。请结合此权重评价公司的核心风险分布。\n\n"
+
+                                "# 报告结构要求\n"
+                                "1. 【整体评价】：基于风险评分，给出该公司的风险等级（低/中/高）。\n"
+                                "2. 【异常穿透分析】：结合 Z-Score，详细分析营收、利润或负债中的离群表现。例如：若营收 Z 值极高但利润 Z 值极低，需质疑盈利质量。\n"
+                                "3. 【潜在风险警示】：列出可能存在的财务风险（如现金流断裂、虚增收入、资产减值等）。\n"
+                                "4. 【审计改进建议】：针对发现的问题，给出具体的核查建议或管理改进方案。\n\n"
+
+                                "# 约束\n"
+                                "- 禁止口水话，使用专业术语。\n"
+                                "- 字数控制在 400-600 字之间。\n"
+                                "- 直接输出报告正文。\n\n"
+                            )
+                        }
+
+                    ]
+        
+        return self.llm_service.call(prompt, model)
 
 
-class LLMService:
-    def __init__(self, api_url: str, api_key: str):
-        self.api_key = api_key
-        self.api_url = api_url
+class IndustryBenchmarker:
+    def __init__(self, data_agent: DataAgent, analysis_agent: AnalysisAgent):
+        self.data_agent = data_agent
+        self.analysis_agent = analysis_agent
+        self.all_indicators: dict[str, list[float]] = {
+            "revenue": [],
+            "net_profit": [],
+            "profit_margin": [],
+            "debt_ratio": [],
+            "roe": [],
+            "cash_to_liabilities" : []
+        }
 
-        self.client = OpenAI(
-            api_key = api_key,
-            base_url= api_url
-        )
+    def collect_company_data(self, pdf_paths: list[Path]):
+        """批量提取多家公司的财务指标"""
+        for path in pdf_paths:
+            try:
+                # 复用 DataAgent 提取原始数据
+                profile = self.data_agent.build_financial_profile(
+                    source="pdf", 
+                    company=path.stem, 
+                    pdf_path=path
+                )
+                # 复用 AnalysisAgent 计算比例指标
+                indicators = self.analysis_agent.extract_indicators(profile["financials"])
+                
+                # 存入样本池
+                for key, value in indicators.items():
+                    if key in self.all_indicators:
+                        self.all_indicators[key].append(value)
+            except Exception as e:
+                print(f"解析 {path} 失败: {e}")
 
-    def call(self, Response_format: dict, model: str) -> str:
-        if not self.api_key:
-            raise RuntimeError("缺少 AI API Key，无法调用模型服务。")
-        try:
-            response = self.client.chat.completions.create(
-                model= model,
-                messages= Response_format,
-                stream= False,
-            )
-            result_json = response.choices[0].message.content
-            # response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
-            # response.raise_for_status()
-            print(f"[CAUSION] 本次消耗 Token 总数: {response.usage.total_tokens}")
-        except Exception as e:
-            print("[ERROR] API 调用失败。")
-        return result_json
+    def calculate_benchmarks(self) -> dict[str, float]:
+        """计算最终的行业均值和标准差"""
+        means = {}
+        stds = {}
+        for key, values in self.all_indicators.items():
+            if len(values) > 1:
+                means[f"{key}_mean"] = statistics.mean(values)
+                stds[f"{key}_std"] = statistics.stdev(values)
+            else:
+                # 样本太少时给默认值，防止除以 0 报错
+                means[f"{key}_mean"] = values[0] if values else 0.0
+                stds[f"{key}_std"] = 1.0 
+        return means, stds
 
 
 class AuditPipeline:
@@ -325,18 +426,21 @@ class AuditPipeline:
         analysis_agent: AnalysisAgent,
         risk_agent: RiskAgent,
         audit_agent: AuditAgent,
+        benchmarker: IndustryBenchmarker,
     ):
         self.data_agent = data_agent
         self.analysis_agent = analysis_agent
         self.risk_agent = risk_agent
         self.audit_agent = audit_agent
+        self.benchmarker = benchmarker
 
-    def run(self, company: str, pdf_path: Path | None, api_url: str | None, output_dir: Path) -> AuditResult:
+    def run(self, company: str, pdf_path: Path | None, peer_pdfs: list[Path] | None,api_url: str | None, output_dir: Path | None) -> AuditResult:
         source = "pdf" if pdf_path else "api"
         result = AuditResult(company=company, source=source)
         api_data = None
         if api_url:
             api_data = self.data_agent.fetch_from_api(api_url, company)
+        
 
         profile = self.data_agent.build_financial_profile(
             source=source,
@@ -345,17 +449,36 @@ class AuditPipeline:
             api_data=api_data,
         )
         result.financials = profile.get("financials", {})
+        print(result.financials)
         result.indicators = self.analysis_agent.extract_indicators(result.financials)
-        result.comparisons = self.analysis_agent.industry_comparison(result.indicators)
+        print(result.indicators)
+
+        if peer_pdfs:
+            self.benchmarker.collect_company_data(peer_pdfs)
+            result.ind_mean, result.ind_std = self.benchmarker.calculate_benchmarks()
+        else:
+            result.ind_mean = None
+            result.ind_std = None
+
+        result.comparisons = self.analysis_agent.industry_comparison(result.indicators, result.ind_mean)
         result.report = self.analysis_agent.generate_analysis_report(result)
+
         result.anomalies = self.risk_agent.detect_anomalies(result.indicators)
         result.risk_score = self.risk_agent.score_risk(result.indicators, result.anomalies)
+        result.z_scores = self.risk_agent.z_scores(result.indicators, ind_mean=result.ind_mean, ind_std=result.ind_std)
+
         result.recommendations = self.audit_agent.generate_recommendations(result)
         result.report += "\n\n" + self.audit_agent.build_audit_report(result)
 
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_file = output_dir / f"{company.replace(' ', '_')}_audit.json"
-        output_file.write_text(json.dumps(result.__dict__, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(result.anomalies)
+        print(f"Risk Score:\t{result.risk_score}")
+        print(f"Z Scores\t{result.z_scores}")
+        print(result.recommendations)
+        print(result.report)
+
+        # output_dir.mkdir(parents=True, exist_ok=True)
+        # output_file = output_dir / f"{company.replace(' ', '_')}_audit.json"
+        # output_file.write_text(json.dumps(result.__dict__, ensure_ascii=False, indent=2), encoding="utf-8")
         return result
 
 
@@ -364,43 +487,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("company", help="要分析的公司名称。")
     parser.add_argument("--pdf", help="公司年报 PDF 文件路径。")
     parser.add_argument("--api-url", help="财务数据 API URL，可选。")
-    parser.add_argument("--output-dir", default="audit_results", help="结果输出目录。")
+    #parser.add_argument("--output-dir", default="audit_results", help="结果输出目录。")
     parser.add_argument("--disable-ai", action="store_true", help="禁用 AI 模型调用，仅使用本地规则生成分析结果。")
     parser.add_argument("--ai-api-url", default=DEFAULT_AI_API_URL, help="LLM 模型服务 URL。")
     parser.add_argument("--ai-api-key", default=DEFAULT_AI_API_KEY, help="LLM 模型服务 API Key。")
-    parser.add_argument("--ai-model", default=DEFAULT_AI_MODEL, help="LLM 模型名称。")
     return parser.parse_args()
 
 
 def main() -> None:
-    args = parse_args()
-    ai_service = None
-    if not args.disable_ai and args.ai_api_key:
-        ai_service = LLMService(args.ai_api_url, args.ai_api_key)
-    elif not args.disable_ai:
-        print("警告：未配置 AI API Key，已切换为本地规则模式。")
+    # args = parse_args()
+    # ai_service = None
+    # if not args.disable_ai and args.ai_api_key:
+    #     ai_service = LLMService(args.ai_api_url, args.ai_api_key)
+    # elif not args.disable_ai:
+    #     print("警告：未配置 AI API Key，已切换为本地规则模式。")
+    ai_service = LLMService(DEFAULT_AI_API_URL, DEFAULT_AI_API_KEY)
 
     data_agent = DataAgent(llm_service=ai_service)
     analysis_agent = AnalysisAgent(llm_service=ai_service)
     risk_agent = RiskAgent()
     audit_agent = AuditAgent(llm_service=ai_service)
-    pipeline = AuditPipeline(data_agent, analysis_agent, risk_agent, audit_agent)
+    benchmarker = IndustryBenchmarker(data_agent=data_agent, analysis_agent=analysis_agent)
+    pipeline = AuditPipeline(data_agent, analysis_agent, risk_agent, audit_agent, benchmarker)
 
-    pdf_path = Path(args.pdf) if args.pdf else None
-    if pdf_path and not pdf_path.exists():
-        raise FileNotFoundError(f"指定的 PDF 文件不存在：{pdf_path}")
+    # pdf_path = Path(args.pdf) if args.pdf else None
+    # if pdf_path and not pdf_path.exists():
+    #     raise FileNotFoundError(f"指定的 PDF 文件不存在：{pdf_path}")
+    pdf_path = Path("11062118.pdf")
 
-    result = pipeline.run(args.company, pdf_path, args.api_url, Path(args.output_dir))
+    result = pipeline.run(company="中炬高新", pdf_path=pdf_path, peer_pdfs=None, api_url=None, output_dir=None)
     print("分析完成：")
     print(f"公司：{result.company}")
     print(f"来源：{result.source}")
     print(f"风险评分：{result.risk_score}")
-    print(f"结果已写入：{Path(args.output_dir) / (args.company.replace(' ', '_') + '_audit.json')}")
+    #print(f"结果已写入：{Path(args.output_dir) / (args.company.replace(' ', '_') + '_audit.json')}")
 
 
 if __name__ == "__main__":
     main()
-    # ai_service = LLMService(DEFAULT_AI_API_URL, DEFAULT_AI_API_KEY)
-    # dataagent = DataAgent(llm_service=ai_service)
-    # text = dataagent.build_financial_profile(company="中炬高新", source="2025 年第一季度报告", pdf_path="11062118.pdf")
-    # print(text["financials"])
+
+    # command:
+    # h:\files\pyfiles\aidedao\.venv\Scripts\python.exe h:/files/pyfiles/aidedao/audit_agent_system.py "中炬高新" --pdf "11062118.pdf"
