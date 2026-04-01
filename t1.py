@@ -548,4 +548,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    #e:\pyfiles\aidedao\.venv\Scripts\python.exe e:/pyfiles/aidedao/t1.py "Company1" --pdf 11062118.pdf --peer-pdf Haitian.pdf,Qianhe.pdf --ai-api-url https://api.siliconflow.cn/v1 --ai-api-key sk-qkjtyjmzbtdhxhhdlttsvfeejnmmwpcoadblkrvgfeihewwk
+    #e:\pyfiles\aidedao\.venv\Scripts\python.exe e:/pyfiles/aidedao/t1.py "Company1" --pdf 11062118.pdf --peer-pdf Haitian.pdf,Qianhe.pdf --ai-api-url https://api.siliconflow.cn/v1 --ai-api-key
