@@ -26,7 +26,7 @@ class AuditResult:
     company: str
     source: str
     financials: dict[str, Any] = field(default_factory=dict)
-    indicators: dict[str, float] = field(default_factory=dict)
+    indicators: dict[str, Any] = field(default_factory=dict)
     comparisons: dict[str, Any] = field(default_factory=dict)
     ind_mean: dict[str, Any] = field(default_factory=dict)
     ind_std: dict[str, Any] = field(default_factory=dict)
@@ -35,6 +35,7 @@ class AuditResult:
     risk_score: float = 0.0
     recommendations: list[str] = field(default_factory=list)
     report: str = ""
+
 
 class LLMService:
     def __init__(self, api_url: str, api_key: str):
@@ -61,6 +62,11 @@ class LLMService:
             print(f"[CAUSION] 本次消耗 Token 总数: {response.usage.total_tokens}")
         except Exception as e:
             print("[ERROR] API 调用失败。")
+            response = self.client.chat.completions.create(
+                model= model,
+                messages= Response_format,
+                stream= False,
+            )
         return result_json
 
 
@@ -133,7 +139,7 @@ class DataAgent:
             text_parts_box[i] = "\n".join(text_parts_box[i])
         return text_parts_box
 
-    def parse_numeric_values(self, text: list[str], buffer: dict[str, float]) -> dict[str, float]:
+    def parse_numeric_values(self, text: list[str], buffer: dict[str, Any]) -> dict[str, Any]:
         #在处理中文财务术语（如“扣非净利润”、“加权ROE”）方面，国产模型有天然的语料优势，且性价比极高
         model = "deepseek-ai/DeepSeek-V3.2"
         prompt = [
@@ -152,17 +158,26 @@ class DataAgent:
                             "1. 统一单位：若原文为“万元”或“亿元”，请自动换算为“元”（浮点数）。\n"
                             "2. 数据清洗：识别括号负数（如 (100) -> -100），剔除千分位逗号。\n"
                             "3. 字段映射：\n"
+                            "   - year: 年份，年度/季度(若为年度报告则直接输出年份，若为季度报告则格式为[year](Quarter)）\n"
                             "   - revenue: 营业收入 / 营业总收入\n"
                             "   - net_profit: 归属于母公司股东的净利润\n"
                             "   - total_assets: 资产总额 / 总资产\n"
                             "   - total_liabilities: 负债总额 / 总负债\n"
                             "   - equity: 归属于母公司股东的所有者权益 / 股东权益合计\n"
                             "   - cash: 期末现金及现金等价物余额\n"
-                            "4. 注意，pdf可能因过长而被拆分，给出的可能为不完整pdf，将提供已经找到并整理好的数据（json），需要鉴别并补充。"
+                            "4. 要求数据类型：\n"
+                            "   - year: str\n"
+                            "   - revenue: float\n"
+                            "   - net_profit: float\n"
+                            "   - total_assets: float\n"
+                            "   - total_liabilities: float\n"
+                            "   - equity: float\n"
+                            "   - cash: float\n"
+                            "5. 注意，pdf可能因过长而被拆分，给出的可能为不完整pdf，将提供已经找到并整理好的数据（json），需要鉴别并补充。"
                             
                             "# 输出要求\n"
                             "仅返回 JSON 格式内容，不含解释，不含引号，不换行。严格按照如下格式：\n"
-                            "{\"revenue\": 0.0, \"net_profit\": 0.0, ...}\n\n"
+                            "{\"year\": \"2026(Quarter1)\", \"revenue\": 0.0, \"net_profit\": 0.0, ...}\n\n"
                             
                             "# 数据提供\n"
                             "<Data found from privious pages>\n"
@@ -175,6 +190,7 @@ class DataAgent:
                     }
                 ]
         metrics = self.llm_service.call(prompt, model)
+        #print(metrics)
         metrics = json.loads(metrics)
         return metrics
 
@@ -188,7 +204,8 @@ class DataAgent:
         except ValueError:
             return 0.0
 
-    def build_financial_profile(self, source: str, company: str, pdf_path: Path | None = None, api_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    def build_financial_profile(self, source: str, company: str, pdf_paths: list[Path] | None = None, api_data: dict[str, Any] | None = None) -> dict[str, Any]:
+
         profile = {
             "company": company,
             "source": source,
@@ -202,12 +219,17 @@ class DataAgent:
                 profile["financials"] = api_data["financials"]
             else:
                 profile["financials"] = self.parse_numeric_values(json.dumps(api_data, ensure_ascii=False))
-        elif pdf_path:
-            raw_text = self.extract_text_from_pdf(pdf_path)
+        elif pdf_paths:
             textnum = 0
-            for text_part in raw_text:
-                profile["raw"][f"text{textnum}"] = text_part[:4000]
-                profile["financials"] = self.parse_numeric_values(text_part,profile["financials"])
+            for pdf_path in pdf_paths:
+                buffer = {}
+                raw_text = self.extract_text_from_pdf(pdf_path)
+                for text_part in raw_text:
+                    profile["raw"][f"text{textnum}"] = text_part[:4000]
+                    buffer = self.parse_numeric_values(text_part,buffer=buffer)
+                profile["financials"][buffer.get("year")] = buffer
+                
+            
         else:
             profile["financials"] = {}
 
@@ -218,23 +240,31 @@ class AnalysisAgent:
     def __init__(self, llm_service: LLMService | None = None):
         self.llm_service = llm_service
 
-    def extract_indicators(self, financials: dict[str, Any]) -> dict[str, float]:
-        revenue = float(financials.get("revenue", 0.0) or 0.0)
-        net_profit = float(financials.get("net_profit", 0.0) or 0.0)
-        total_assets = float(financials.get("total_assets", 0.0) or 0.0)
-        total_liabilities = float(financials.get("total_liabilities", 0.0) or 0.0)
-        equity = float(financials.get("equity", 0.0) or 0.0)
-        cash = float(financials.get("cash", 0.0) or 0.0)
+    def extract_indicators(self, financials: dict[str, Any]) -> dict[str, Any]:
+        indicator_dict: dict[str, dict] = {}
+        for fin_data in financials:
+            revenue = float(financials[fin_data].get("revenue", 0.0) or 0.0)
+            net_profit = float(financials[fin_data].get("net_profit", 0.0) or 0.0)
+            total_assets = float(financials[fin_data].get("total_assets", 0.0) or 0.0)
+            total_liabilities = float(financials[fin_data].get("total_liabilities", 0.0) or 0.0)
+            equity = float(financials[fin_data].get("equity", 0.0) or 0.0)
+            cash = float(financials[fin_data].get("cash", 0.0) or 0.0)
+            year = str(financials[fin_data].get("year",""))
 
-        indicators: dict[str, float] = {
-            "revenue": revenue,
-            "net_profit": net_profit,
-            "profit_margin": (net_profit / revenue * 100) if revenue else 0.0,
-            "debt_ratio": (total_liabilities / total_assets * 100) if total_assets else 0.0,
-            "roe": (net_profit / equity * 100) if equity else 0.0,
-            "cash_to_liabilities": (cash / total_liabilities * 100) if total_liabilities else 0.0,
-        }
-        return indicators
+
+            indicator: dict[str, Any] = {
+                "year": year,
+                "revenue": revenue,
+                "net_profit": net_profit,
+                "profit_margin": (net_profit / revenue * 100) if revenue else 0.0,
+                "debt_ratio": (total_liabilities / total_assets * 100) if total_assets else 0.0,
+                "roe": (net_profit / equity * 100) if equity else 0.0,
+                "cash_to_liabilities": (cash / total_liabilities * 100) if total_liabilities else 0.0,
+            }
+
+            indicator_dict[indicator.get("year","")] = indicator
+
+        return indicator_dict
 
     def industry_comparison(self, indicators: dict[str, float], ind_means: dict[str, float] | None = None) -> dict[str, Any]:
         benchmark = ind_means if ind_means else {
@@ -244,13 +274,14 @@ class AnalysisAgent:
             "cash_to_liabilities": 25.0,
         }
         comparison: dict[str, Any] = {}
-        for key, value in indicators.items():
-            if key in benchmark:
-                comparison[key] = {
-                    "value": round(value, 2),
-                    "benchmark": benchmark[key],
-                    "status": "低" if value < benchmark[key] else "高" if value > benchmark[key] else "持平",
-                }
+        for year, dict0 in indicators.items():
+            for key, value in dict0.items():
+                if key in benchmark[year]:
+                    comparison.setdefault(year, {})[key] = {
+                        "value": round(value, 2),
+                        "benchmark": benchmark[year][key],
+                        "status": "低" if value < benchmark[year][key] else "高" if value > benchmark[year][key] else "持平",
+                    }
         return comparison
 
     def generate_analysis_report(self, result: AuditResult) -> str:
@@ -267,12 +298,10 @@ class AnalysisAgent:
                             "请针对以下公司的财务表现并根据行业对比结果撰写一份简要分析报告。\n\n"
 
                             "# Input Data\n"
+                            "# 数据字典严格按照tag年份/季度排序\n"
+                            f"- 年份/季度：{[key for key in result.indicators]}"
                             f"- 公司名称：{result.company}\n"
-                            f"- 营业收入：{result.indicators.get('revenue', 0.0):,.2f}\n"
-                            f"- 净利润：{result.indicators.get('net_profit', 0.0):,.2f}\n"
-                            f"- 净利率：{result.indicators.get('profit_margin', 0.2):.2f}%\n"
-                            f"- 资产负债率：{result.indicators.get('debt_ratio', 0.0):.2f}%\n"
-                            f"- ROE：{result.indicators.get('roe', 0.0):.2f}%\n"
+                            f"- 营业收入；净利润；净利率；资产负债率；ROE；核心指标与行业对比： {result.indicators}\n"
                             f"- 核心指标与行业对比：{result.comparisons}\n\n"
 
                             "# Report Requirements\n"
@@ -300,30 +329,43 @@ class RiskAgent:
         }
 
 
-    def detect_anomalies(self, indicators: dict[str, float]) -> list[str]:
-        anomalies: list[str] = []
-        if indicators.get("profit_margin", 0.0) < self.thresholds["profit_margin"]:
-            anomalies.append("净利率低于行业警戒线，存在盈利能力不足风险。")
-        if indicators.get("debt_ratio", 0.0) > self.thresholds["debt_ratio"]:
-            anomalies.append("资产负债率偏高，可能存在偿债压力。")
-        if indicators.get("roe", 0.0) < self.thresholds["roe"]:
-            anomalies.append("股本回报率偏低，资本使用效率不佳。")
-        if indicators.get("cash_to_liabilities", 0.0) < self.thresholds["cash_to_liabilities"]:
-            anomalies.append("现金储备不足以覆盖负债，流动性风险较高。")
+    def detect_anomalies(self, indicators: dict[str, float]) -> dict[str, list]:
+        anomalies: dict[str,list[str]] = {}
+        for year, dict0 in indicators.items():
+            if anomalies.get("year", None) == None:
+                anomalies[year] = []
+            if dict0.get("profit_margin", 0.0) < self.thresholds["profit_margin"]:
+                anomalies[year].append("净利率低于行业警戒线，存在盈利能力不足风险。")
+            if dict0.get("debt_ratio", 0.0) > self.thresholds["debt_ratio"]:
+                anomalies[year].append("资产负债率偏高，可能存在偿债压力。")
+            if dict0.get("roe", 0.0) < self.thresholds["roe"]:
+                anomalies[year].append("股本回报率偏低，资本使用效率不佳。")
+            if dict0.get("cash_to_liabilities", 0.0) < self.thresholds["cash_to_liabilities"]:
+                anomalies[year].append("现金储备不足以覆盖负债，流动性风险较高。")
+
         return anomalies
 
-    def score_risk(self, indicators: dict[str, float], anomalies: list[str]) -> float:
-        score = 50.0
-        score += max(0.0, min(20.0, indicators.get("debt_ratio", 0.0) / 5.0))
-        score += max(0.0, min(20.0, (20.0 - indicators.get("profit_margin", 0.0)) / 1.0))
-        score += 10.0 * len(anomalies)
-        return min(100.0, round(score, 1))
+    def score_risk(self, indicators: dict[str, float], anomalies: dict[str,list[str]]) -> dict[str, float]:
+        risk_scores: dict[str, float] = {}
+        for year in indicators:
+            score = 50.0
+            score += max(0.0, min(20.0, indicators[year].get("debt_ratio", 0.0) / 5.0))
+            score += max(0.0, min(20.0, (20.0 - indicators[year].get("profit_margin", 0.0)) / 1.0))
+            score += 10.0 * len(anomalies[year])
+            risk_scores[year] = min(100.0, round(score, 1))
+        return risk_scores
     
-    def z_scores(self, indicators: dict[str, float], ind_mean: dict[str, float] | None = None, ind_std: dict[str, float] | None = None) -> dict[str, float]:
-        z_scores = {}
+    def z_scores(self, indicators: dict[str, float], ind_mean: dict[str, float] | None = None, ind_std: dict[str, float] | None = None) -> dict[str, dict]:
+        z_scores: dict[str, dict] = {}
+
         if ind_std != None and ind_mean != None:
-            for key, value in indicators.items():
-                z_scores[key] = (value - ind_mean.get(key+"_mean", 0.0)) / max(ind_std.get(key+"_std", 1.0), 0.0001)
+            for year in ind_mean:
+                for key in ind_mean[year]:
+                    extent_key = "_mean"
+                    key = key.replace(extent_key,"")
+                    key = key.strip()
+                    value = indicators[year].get(key, 0.0)
+                    z_scores.setdefault(year, {})[key] = (value - ind_mean[year].get(key+"_mean", 0.0)) / max(ind_std[year].get(key+"_std", 1.0), 0.0001)
 
         return z_scores
 
@@ -332,16 +374,19 @@ class AuditAgent:
     def __init__(self, llm_service: LLMService | None = None):
         self.llm_service = llm_service
 
-    def generate_recommendations(self, result: AuditResult) -> list[str]:
-        recommendations: list[str] = []
-        if result.indicators.get("profit_margin", 0.0) < 10.0:
-            recommendations.append("检查成本结构与毛利水平，评估可提升利润率的环节。")
-        if result.indicators.get("debt_ratio", 0.0) > 60.0:
-            recommendations.append("审查负债组合与偿债计划，关注短期借款与应付债务。")
-        if result.indicators.get("cash_to_liabilities", 0.0) < 15.0:
-            recommendations.append("强化现金流管理，评估应收账款和存货周转情况。 ")
-        if not recommendations:
-            recommendations.append("当前指标整体稳定，建议继续关注业务增长与现金流质量。 ")
+    def generate_recommendations(self, result: AuditResult) -> dict[str, list[str]]:
+
+        recommendations: dict[str, list[str]] = {}
+        for year in result.indicators:
+            recommendations.setdefault(year, [])
+            if result.indicators[year].get("profit_margin", 0.0) < 10.0:
+                recommendations[year].append("检查成本结构与毛利水平，评估可提升利润率的环节。")
+            if result.indicators[year].get("debt_ratio", 0.0) > 60.0:
+                recommendations[year].append("审查负债组合与偿债计划，关注短期借款与应付债务。")
+            if result.indicators[year].get("cash_to_liabilities", 0.0) < 15.0:
+                recommendations[year].append("强化现金流管理，评估应收账款和存货周转情况。 ")
+            if not recommendations[year]:
+                recommendations[year].append("当前指标整体稳定，建议继续关注业务增长与现金流质量。 ")
         return recommendations
 
     def build_audit_report(self, result: AuditResult) -> str:
@@ -357,6 +402,7 @@ class AuditAgent:
                             "content": (
                                 "请基于以下风险评分、行业基准对比及异常检测结果(如果给出）和财务分析结果撰写审计建议：\n"
                                 "# 输入数据 (Context)\n"
+                                "数据为多年数据组成的字典，键为年份或季度\n"
                                 f"- 目标公司：{result.company}\n"
                                 f"- 核心指标 (Indicators): {result.indicators}\n"
                                 f"- 行业基准偏离度 (Z-Scores): {result.z_scores}\n"
@@ -389,16 +435,10 @@ class IndustryBenchmarker:
     def __init__(self, data_agent: DataAgent, analysis_agent: AnalysisAgent):
         self.data_agent = data_agent
         self.analysis_agent = analysis_agent
-        self.all_indicators: dict[str, list[float]] = {
-            "revenue": [],
-            "net_profit": [],
-            "profit_margin": [],
-            "debt_ratio": [],
-            "roe": [],
-            "cash_to_liabilities" : []
-        }
+        self.all_indicators: dict[str, dict] = {}
 
     def collect_company_data(self, pdf_paths: list[Path]):
+        
         """批量提取多家公司的财务指标"""
         for path in pdf_paths:
             try:
@@ -406,30 +446,48 @@ class IndustryBenchmarker:
                 profile = self.data_agent.build_financial_profile(
                     source="pdf", 
                     company= path.stem, 
-                    pdf_path=path
+                    pdf_paths= [path]
                 )
                 # 复用 AnalysisAgent 计算比例指标
                 indicators = self.analysis_agent.extract_indicators(profile["financials"])
-                
-                # 存入样本池
-                for key, value in indicators.items():
-                    if key in self.all_indicators:
-                        self.all_indicators[key].append(value)
+                for year in indicators:
+                    if self.all_indicators.get(year,None) != None: 
+                        # 存入样本池
+                        for key0, value in indicators[year].items():
+                            if key0 in self.all_indicators[year]:
+                                self.all_indicators[year][key0].append(value)
+                    else:
+                        self.all_indicators[year] = {
+                            "revenue": [],
+                            "net_profit": [],
+                            "profit_margin": [],
+                            "debt_ratio": [],
+                            "roe": [],
+                            "cash_to_liabilities" : []
+                        }
+
+                    # 存入样本池
+                    for key0, value in indicators[year].items():
+                        if key0 in self.all_indicators[year] and type(value) != str:
+                            self.all_indicators[year][key0].append(value)
             except Exception as e:
                 print(f"解析 {path} 失败: {e}")
 
-    def calculate_benchmarks(self) -> dict[str, float]:
+    def calculate_benchmarks(self) -> dict[str, dict]:
+        #print(self.all_indicators)
         """计算最终的行业均值和标准差"""
-        means = {}
-        stds = {}
-        for key, values in self.all_indicators.items():
-            if len(values) > 1:
-                means[f"{key}_mean"] = statistics.mean(values)
-                stds[f"{key}_std"] = statistics.stdev(values)
-            else:
-                # 样本太少时给默认值，防止除以 0 报错
-                means[f"{key}_mean"] = values[0] if values else 0.0
-                stds[f"{key}_std"] = 1.0 
+        means: dict[str,dict] = {}
+        stds: dict[str,dict] = {}
+        for year, dict0 in self.all_indicators.items():
+
+            for key, values in dict0.items():
+                if len(values) > 1:
+                    means.setdefault(year, {})[f"{key}_mean"] = statistics.mean(values)
+                    stds.setdefault(year, {})[f"{key}_std"] = statistics.stdev(values)
+                else:
+                    # 样本太少时给默认值，防止除以 0 报错
+                    means.setdefault(year, {})[f"{key}_mean"] = values[0] if values else 0.0
+                    stds.setdefault(year, {})[f"{key}_std"] = 1.0
         return means, stds
 
 
@@ -448,8 +506,8 @@ class AuditPipeline:
         self.audit_agent = audit_agent
         self.benchmarker = benchmarker
 
-    def run(self, company: str, pdf_path: Path | None, peer_pdfs: list[Path] | None,api_url: str | None, output_dir: Path | None) -> AuditResult:
-        source = "pdf" if pdf_path else "api"
+    def run(self, company: str, pdf_paths: list[Path] | None, peer_pdfs: list[Path] | None,api_url: str | None, output_dir: Path | None) -> AuditResult:
+        source = "pdf" if pdf_paths else "api"
         result = AuditResult(company=company, source=source)
         api_data = None
         if api_url:
@@ -459,7 +517,7 @@ class AuditPipeline:
         profile = self.data_agent.build_financial_profile(
             source=source,
             company=company,
-            pdf_path=pdf_path,
+            pdf_paths=pdf_paths,
             api_data=api_data,
         )
         result.financials = profile.get("financials", {})
@@ -512,7 +570,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    # ai_service = None
+    ai_service = None
     if args.ai_api_key and args.ai_api_url:
         ai_service = LLMService(args.ai_api_url, args.ai_api_key)
     elif not args.disable_ai:
@@ -526,9 +584,17 @@ def main() -> None:
     benchmarker = IndustryBenchmarker(data_agent=data_agent, analysis_agent=analysis_agent)
     pipeline = AuditPipeline(data_agent, analysis_agent, risk_agent, audit_agent, benchmarker)
 
-    pdf_path = Path(args.pdf) if args.pdf else None
-    if pdf_path and not pdf_path.exists():
-        raise FileNotFoundError(f"指定的 PDF 文件不存在：{pdf_path}")
+    pdf_list = []
+    peer_pdf_list = []
+
+    if args.pdf:
+        pdf_list = args.pdf.split(",")
+        for i in range(len(pdf_list)):
+            pdf_list[i] = Path(pdf_list[i])
+    
+    for pdf_path in pdf_list:
+        if pdf_path and not pdf_path.exists():
+            raise FileNotFoundError(f"指定的 PDF 文件不存在：{pdf_path}")
     
     if args.peer_pdf:
         peer_pdf_list = args.peer_pdf.split(",")
@@ -538,7 +604,7 @@ def main() -> None:
         peer_pdf_list = None
     
 
-    result = pipeline.run(company=args.company, pdf_path=pdf_path, peer_pdfs=peer_pdf_list, api_url=None, output_dir=None)
+    result = pipeline.run(company=args.company, pdf_paths=pdf_list, peer_pdfs=peer_pdf_list, api_url=None, output_dir=None)
     print("分析完成：")
     print(f"公司：{result.company}")
     print(f"来源：{result.source}")
@@ -548,4 +614,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    #e:\pyfiles\aidedao\.venv\Scripts\python.exe e:/pyfiles/aidedao/t1.py "Company1" --pdf 11062118.pdf --peer-pdf Haitian.pdf,Qianhe.pdf --ai-api-url https://api.siliconflow.cn/v1 --ai-api-key
+    #e:\pyfiles\aidedao\.venv\Scripts\python.exe e:/pyfiles/aidedao/t1.py "Company1" --pdf Zhongxin24Q1.pdf,Zhongxin25Q1.pdf --peer-pdf Haitian24Q1.pdf,Qianhe24Q1.pdf,Haitian25Q1.pdf,Qianhe25Q1.pdf --ai-api-url https://api.siliconflow.cn/v1 --ai-api-key sk-qkjtyjmzbtdhxhhdlttsvfeejnmmwpcoadblkrvgfeihewwk
