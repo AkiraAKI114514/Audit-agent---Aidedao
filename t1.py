@@ -320,13 +320,14 @@ class AnalysisAgent:
 
 
 class RiskAgent:
-    def __init__(self, anomaly_thresholds: dict[str, float] | None = None):
+    def __init__(self, anomaly_thresholds: dict[str, float] | None = None, llm_service: LLMService | None = None):
         self.thresholds = anomaly_thresholds or {
             "profit_margin": 5.0,
             "debt_ratio": 65.0,
             "roe": 5.0,
             "cash_to_liabilities": 10.0,
         }
+        self.llm_service = llm_service
 
 
     def detect_anomalies(self, indicators: dict[str, float]) -> dict[str, list]:
@@ -345,14 +346,82 @@ class RiskAgent:
 
         return anomalies
 
-    def score_risk(self, indicators: dict[str, float], anomalies: dict[str,list[str]]) -> dict[str, float]:
+    def score_risk(self, indicators: dict[str, float], anomalies: dict[str,list[str]], z_scores: dict[str, dict]) -> dict[str, Any]:
         risk_scores: dict[str, float] = {}
-        for year in indicators:
-            score = 50.0
-            score += max(0.0, min(20.0, indicators[year].get("debt_ratio", 0.0) / 5.0))
-            score += max(0.0, min(20.0, (20.0 - indicators[year].get("profit_margin", 0.0)) / 1.0))
-            score += 10.0 * len(anomalies[year])
-            risk_scores[year] = min(100.0, round(score, 1))
+        system_prompt = [
+            {
+                "role": "system",
+                "content": (
+                    "# Role\n"
+                    "你是一位资深财务审计专家系统，专注于通过定量指标分析识别公司财务造假及经营风险。\n\n"
+                
+                    "# Task\n"
+                    "根据用户提供的多年公司指标信息及 Z-Score，按照特定的【三层加权风险评分体系】计算综合风险分。\n\n"
+                
+                    "# Scoring Logic\n"
+                    "每个维度的子分计算逻辑如下：\n"
+                    "Score = min(100, Z_Base + Trend_Penalty + Logic_Penalty)\n\n"
+                    
+                    "1. Z_Base (基础分): \n"
+                       "- Z-Score < 1.8 (高危): 50-60分\n"
+                       "- 1.8 <= Z-Score < 3.0 (预警): 20-40分\n"
+                       "- Z-Score >= 3.0 (健康): 0-10分\n"
+                    "2. Trend_Penalty (趋势异常 +25分): \n"
+                       "- 关键指标同比恶化超过 30%，或连续两年向差。\n"
+                    "3. Logic_Penalty (关联矛盾 +25分): \n"
+                       "- 识别红旗信号（如：净利润增长但现金流为负；收入增长但税收下降；大存大贷等）。\n\n"
+                
+                    "# Weights\n"
+                    "- 偿债风险 (30%): 资产负债率、流动比率\n"
+                    "- 盈利质量 (25%): 净利润率、ROA、现金流背离\n"
+                    "- 营运效率 (20%): 应收账款天数、存货天数趋势\n"
+                    "- 结构稳定性 (15%): 权益比率、NWC 趋势\n"
+                    "- 成长性风险 (10%): 收入增速、毛利率突变\n\n"
+                
+                    "# Output Format (Strict JSON)\n"
+                    “必须直接返回 JSON 格式，包含以下字段：\n"
+                    """{
+                      "dimensions": {
+                        "solvency": {"score": 0, "reason": ""},
+                        "profitability": {"score": 0, "reason": ""},
+                        "efficiency": {"score": 0, "reason": ""},
+                        "stability": {"score": 0, "reason": ""},
+                        "growth": {"score": 0, "reason": ""}
+                      },
+                      "total_risk_score": 0,
+                      "audit_conclusion": "核心风险点总结",
+                      "red_flags": ["信号1", "信号2"]
+                    }"""
+                    
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    "#数据:\n"
+                    "公司指标：{indicators}\n"
+                    "Z_scores: {z_scores}\n\n"
+
+                    "#输出格式要求:\n"
+                    “必须直接返回 JSON 格式，包含以下字段：\n"
+                    """{
+                      "dimensions": {
+                        "solvency": {"score": 0, "reason": ""},
+                        "profitability": {"score": 0, "reason": ""},
+                        "efficiency": {"score": 0, "reason": ""},
+                        "stability": {"score": 0, "reason": ""},
+                        "growth": {"score": 0, "reason": ""}
+                      },
+                      "total_risk_score": 0,
+                      "audit_conclusion": "核心风险点总结",
+                      "red_flags": ["信号1", "信号2"]
+                    }"""
+                )
+            }
+        ]
+
+        risk_score = self.llm_service()
+        
         return risk_scores
     
     def z_scores(self, indicators: dict[str, float], ind_mean: dict[str, float] | None = None, ind_std: dict[str, float] | None = None) -> dict[str, dict]:
