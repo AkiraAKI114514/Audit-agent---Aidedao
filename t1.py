@@ -901,12 +901,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    # ai_service = LLMService("https://api.siliconflow.cn/v1", "sk-qkjtyjmzbtdhxhhdlttsvfeejnmmwpcoadblkrvgfeihewwk")
-    # risk = RiskAgent(llm_service=ai_service, model="deepseek-ai/DeepSeek-V3.2")
-
-    # risk_scores = risk.score_risk(indicators={'2024': {'year': '2024', 'revenue': 5518756937.25, 'net_profit': 893066517.48, 'profit_margin': 16.18238541096205, 'gross_profit_margin': 1.0, 'debt_ratio': 29.9484598175773, 'return_on_assets': 0.10842311100036663, 'liquidity_ratio': -0.31766057110006546, 'days_sales_outstanding': 27.492722983811095, 'days_inventory_outstanding': 0.0, 'equity_ratio': 0.6815728490142506, 'roe': 15.907780240538846, 'cash_to_liabilities': 28.076538257782218}},anomalies=[],z_scores={})
-    # print(risk_scores)
-    #e:\pyfiles\aidedao\.venv\Scripts\python.exe e:/pyfiles/aidedao/t1.py "Company1" --pdf Zhongxin24Q1.pdf,Zhongxin25Q1.pdf --peer-pdf Haitian24Q1.pdf,Qianhe24Q1.pdf,Haitian25Q1.pdf,Qianhe25Q1.pdf --ai-api-url https://api.siliconflow.cn/v1 --ai-api-key sk-qkjtyjmzbtdhxhhdlttsvfeejnmmwpcoadblkrvgfeihewwk
-
-    #e:\pyfiles\aidedao\.venv\Scripts\python.exe e:/pyfiles/aidedao/t1.py "中炬高新" --pdf ./dist0/Zhongxin24.pdf,./dist0/Zhongxin23.pdf --peer-pdf ./dist0/Haitian24.pdf,./dist0/Qianhe24.pdf,./dist0/Haitian23.pdf,./dist0/Qianhe23.pdf --ai-api-url https://api.siliconflow.cn/v1 --ai-api-key sk-qkjtyjmzbtdhxhhdlttsvfeejnmmwpcoadblkrvgfeihewwk --model deepseek-ai/DeepSeek-V3.2 --tc-api-key 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
-    #Pro/deepseek-ai/DeepSeek-V3.2,deepseek-ai/DeepSeek-V3.2,Qwen/Qwen3.5-9B
+    
