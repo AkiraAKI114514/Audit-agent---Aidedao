@@ -41,4 +41,7 @@ This system automates the traditional auditing workflow by deploying specialized
 └── README.md            # Project documentation
 ```
 ## Installations
-- **pip install request 
+- **pip install request tavity pdfplumber openai
+
+## Run code
+- **
