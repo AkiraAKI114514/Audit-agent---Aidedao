@@ -1,4 +1,3 @@
-# aidedao
-Packages requirements:
-
-    (terminal)pip install requests openai pdfplumber
+# Audit agent
+##Packages requirements:
+pip install requests openai pdfplumber
