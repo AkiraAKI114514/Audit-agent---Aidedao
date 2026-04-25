@@ -1,6 +1,6 @@
 # AI-Powered Multi-Agent Financial Auditing System
 
-![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)
+![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![AI Framework](https://img.shields.io/badge/Agent-Multi--Agent--Architecture-red)
 ![UI Framework](https://img.shields.io/badge/GUI-CustomTkinter-orange)
 
@@ -45,4 +45,4 @@ This system automates the traditional auditing workflow by deploying specialized
 
 ## Run code
 - ** Engine test: ```python t1.py "company_name" --pdf --peer-pdf --ai-api-url --ai-api-key --model --tc-api-key```
-- ** Complete application(+gui): ```
+- ** Complete application(+gui): ```python gui_runner.py```
