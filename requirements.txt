@@ -1,1 +1,1 @@
-Requirements: pip install tivaty openai pdfplumber request
+Requirements: pip install tavity openai pdfplumber request
