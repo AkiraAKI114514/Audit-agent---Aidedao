@@ -1,5 +1,1 @@
-Packages requirements:
-    requests
-    openai
-    pdfplumber
-    (terminal)pip install requests openai pdfplumber
+Requirements: pip install tivaty openai pdfplumber request
