@@ -44,4 +44,4 @@ This system automates the traditional auditing workflow by deploying specialized
 - **pip install request tavity pdfplumber openai
 
 ## Run code
-- **
+- ** Engine test:```t1.py "company_name" --pdf --peer-pdf --ai-api-url --ai-api-key --model --tc-api-key```
